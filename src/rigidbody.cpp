@@ -52,23 +52,25 @@ Mat3 RigidBody::worldInvInertiaTensor() const {
     return result; // NOTE: apply as R_scaled * (R^T * v), see applyImpulseAtPoint
 }
 
+Vec3 RigidBody::applyWorldInvInertia(const Vec3& v) const {
+    if (isStatic) return {};
+    Mat3 R = orientation.toMat3();
+    Vec3 local = R.transformInverse(v);
+    Vec3 localScaled = {
+        local.x * invInertiaLocal.x,
+        local.y * invInertiaLocal.y,
+        local.z * invInertiaLocal.z
+    };
+    return R * localScaled;
+}
+
 void RigidBody::applyImpulseAtPoint(const Vec3& impulse, const Vec3& worldPoint) {
     if (isStatic) return;
     linearVelocity = linearVelocity + impulse * invMass;
 
     Vec3 r = worldPoint - position;
     Vec3 torqueImpulse = r.cross(impulse);
-
-    // angularVelocity += I_world^-1 * torqueImpulse
-    Mat3 R = orientation.toMat3();
-    Vec3 local = R.transformInverse(torqueImpulse); // into local space
-    Vec3 localScaled = {
-        local.x * invInertiaLocal.x,
-        local.y * invInertiaLocal.y,
-        local.z * invInertiaLocal.z
-    };
-    Vec3 worldDeltaAngVel = R * localScaled; // back into world space
-    angularVelocity = angularVelocity + worldDeltaAngVel;
+    angularVelocity = angularVelocity + applyWorldInvInertia(torqueImpulse);
 }
 
 void RigidBody::integrate(float dt) {

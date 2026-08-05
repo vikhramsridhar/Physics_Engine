@@ -48,26 +48,47 @@ bool sphereBoxContact(RigidBody& sphereBody, RigidBody& boxBody, Contact& out) {
     out.point = boxBody.position + boxRot * closestLocal;
     return true;
 }
-
 // ---------------------------------------------------------------------------
-// Box vs Box — Separating Axis Theorem, FACE AXES ONLY.
+// Box vs Box — FULL Separating Axis Theorem (face axes + edge-edge axes)
+// with proper contact manifold generation via face clipping.
 //
-// Educational simplification: a fully correct SAT implementation also tests
-// the 9 cross-product axes of edge pairs (needed to catch certain edge-edge
-// collision configurations). Skipping those means some edge-on-edge contacts
-// will be missed or slightly mispositioned. This is a reasonable place to
-// start; the fix is a good follow-up exercise (see README).
+// This replaces an earlier single-approximate-point version, which caused
+// box stacks to gain energy and explode (see README history). The fix has
+// two parts:
+//   1. Test all 15 SAT axes (6 face + 9 edge cross-products), not just 6,
+//      so penetration depth/direction is correct in edge-on-edge cases.
+//   2. When the minimum-penetration axis is a FACE axis (the common case
+//      for stacked/resting boxes), generate a proper 2-4 point contact
+//      manifold by clipping the incident face against the reference face's
+//      four side planes (Sutherland-Hodgman clipping) rather than using
+//      one point at the midpoint of the two centers. Multiple contact
+//      points let the solver resist rotation correctly, which is what
+//      was missing before and caused the instability.
+//   When the axis is an EDGE axis, we fall back to a single contact point
+//   near the closest approach of the two edges -- edge-edge contact is
+//   inherently a single point in exact geometry anyway.
 // ---------------------------------------------------------------------------
-static bool testAxis(const Vec3& axis, RigidBody& a, RigidBody& b,
-                      float& bestOverlap, Vec3& bestAxis) {
+
+namespace {
+
+struct AxisResult {
+    float overlap = FLT_MAX;
+    Vec3 axis;               // pointing from A to B
+    int type = -1;            // 0 = face of A, 1 = face of B, 2 = edge-edge
+    int faceAxisIndex = -1;
+    int edgeIndexA = -1, edgeIndexB = -1;
+};
+
+bool testAxisFull(const Vec3& axis, RigidBody& a, RigidBody& b,
+                   int type, int faceIdx, int edgeA, int edgeB,
+                   AxisResult& best) {
     float len = axis.length();
-    if (len < 1e-6f) return true; // degenerate axis, skip
+    if (len < 1e-6f) return true; // degenerate (near-parallel edges), skip
     Vec3 n = axis * (1.0f / len);
 
     Mat3 rotA = a.orientation.toMat3();
     Mat3 rotB = b.orientation.toMat3();
 
-    // Project each box's half-extents onto axis n to get its "radius" along n
     auto boxRadius = [&](RigidBody& box, Mat3& rot) {
         Vec3 he = box.shape.halfExtents;
         return std::abs(rot.col0.dot(n)) * he.x
@@ -80,38 +101,162 @@ static bool testAxis(const Vec3& axis, RigidBody& a, RigidBody& b,
     float centerDist = (b.position - a.position).dot(n);
     float overlap = ra + rb - std::abs(centerDist);
 
-    if (overlap < 0.0f) return false; // separating axis found -> no collision
+    if (overlap < 0.0f) return false; // separating axis -> no collision
 
-    if (overlap < bestOverlap) {
-        bestOverlap = overlap;
-        // Keep the axis pointing from A to B
-        bestAxis = centerDist < 0.0f ? -n : n;
+    if (overlap < best.overlap) {
+        best.overlap = overlap;
+        best.axis = centerDist < 0.0f ? -n : n;
+        best.type = type;
+        best.faceAxisIndex = faceIdx;
+        best.edgeIndexA = edgeA;
+        best.edgeIndexB = edgeB;
     }
     return true;
 }
 
-bool boxBoxContact(RigidBody& a, RigidBody& b, Contact& out) {
+// Returns the 4 world-space vertices of the face of `box` whose outward
+// normal is closest to `dir`.
+void getFaceVerts(RigidBody& box, const Vec3& dir, Vec3 outVerts[4]) {
+    Mat3 rot = box.orientation.toMat3();
+    Vec3 he = box.shape.halfExtents;
+    Vec3 axes[3] = { rot.col0, rot.col1, rot.col2 };
+    float extents[3] = { he.x, he.y, he.z };
+
+    int bestAxis = 0; float bestSign = 1.0f; float bestDot = -FLT_MAX;
+    for (int i = 0; i < 3; ++i) {
+        float d = axes[i].dot(dir);
+        if (std::abs(d) > bestDot) { bestDot = std::abs(d); bestAxis = i; bestSign = d > 0 ? 1.0f : -1.0f; }
+    }
+
+    int u = (bestAxis + 1) % 3, v = (bestAxis + 2) % 3;
+    Vec3 center = box.position + axes[bestAxis] * (extents[bestAxis] * bestSign);
+    Vec3 du = axes[u] * extents[u];
+    Vec3 dv = axes[v] * extents[v];
+    outVerts[0] = center - du - dv;
+    outVerts[1] = center + du - dv;
+    outVerts[2] = center + du + dv;
+    outVerts[3] = center - du + dv;
+}
+
+// Sutherland-Hodgman: clips polygon `poly` (n verts) against a single plane
+// (point + inward-pointing normal), keeping the inside portion.
+int clipPolygonAgainstPlane(const Vec3* poly, int n, const Vec3& planePoint,
+                             const Vec3& planeNormal, Vec3* out) {
+    int count = 0;
+    for (int i = 0; i < n; ++i) {
+        Vec3 curr = poly[i];
+        Vec3 next = poly[(i + 1) % n];
+        float dCurr = (curr - planePoint).dot(planeNormal);
+        float dNext = (next - planePoint).dot(planeNormal);
+
+        if (dCurr >= 0.0f) out[count++] = curr;
+        if ((dCurr >= 0.0f) != (dNext >= 0.0f)) {
+            float t = dCurr / (dCurr - dNext);
+            out[count++] = curr + (next - curr) * t;
+        }
+    }
+    return count;
+}
+
+} // namespace
+
+bool boxBoxContact(RigidBody& a, RigidBody& b, std::vector<Contact>& out) {
     Mat3 rotA = a.orientation.toMat3();
     Mat3 rotB = b.orientation.toMat3();
+    Vec3 axesA[3] = { rotA.col0, rotA.col1, rotA.col2 };
+    Vec3 axesB[3] = { rotB.col0, rotB.col1, rotB.col2 };
 
-    float bestOverlap = FLT_MAX;
-    Vec3 bestAxis;
+    AxisResult best;
 
-    // 3 face axes of A, 3 face axes of B
-    Vec3 axes[6] = { rotA.col0, rotA.col1, rotA.col2, rotB.col0, rotB.col1, rotB.col2 };
-    for (auto& axis : axes) {
-        if (!testAxis(axis, a, b, bestOverlap, bestAxis)) return false;
+    for (int i = 0; i < 3; ++i)
+        if (!testAxisFull(axesA[i], a, b, 0, i, -1, -1, best)) return false;
+    for (int i = 0; i < 3; ++i)
+        if (!testAxisFull(axesB[i], a, b, 1, i, -1, -1, best)) return false;
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+            if (!testAxisFull(axesA[i].cross(axesB[j]), a, b, 2, -1, i, j, best)) return false;
+
+    if (best.type == -1) return false; // shouldn't happen; safety net
+
+    // --- Case 1: face contact -> clip incident face against reference face ---
+    if (best.type == 0 || best.type == 1) {
+        RigidBody& refBox = (best.type == 0) ? a : b;
+        RigidBody& incBox = (best.type == 0) ? b : a;
+        Vec3 refNormal = (best.type == 0) ? best.axis : best.axis * -1.0f;
+
+        Vec3 refFace[4], incFace[4];
+        getFaceVerts(refBox, refNormal, refFace);
+        getFaceVerts(incBox, refNormal * -1.0f, incFace);
+
+        Vec3 refCenter = (refFace[0] + refFace[1] + refFace[2] + refFace[3]) * 0.25f;
+        Vec3 poly[16]; int polyCount = 4;
+        for (int i = 0; i < 4; ++i) poly[i] = incFace[i];
+
+        for (int e = 0; e < 4; ++e) {
+            Vec3 edgeStart = refFace[e];
+            Vec3 edgeEnd = refFace[(e + 1) % 4];
+            Vec3 edgeDir = (edgeEnd - edgeStart).normalized();
+            Vec3 sideNormal = edgeDir.cross(refNormal);
+            if (sideNormal.dot(refCenter - edgeStart) < 0.0f) sideNormal = -sideNormal;
+
+            Vec3 clipped[16];
+            int clippedCount = clipPolygonAgainstPlane(poly, polyCount, edgeStart, sideNormal, clipped);
+            polyCount = std::min(clippedCount, 16);
+            for (int i = 0; i < polyCount; ++i) poly[i] = clipped[i];
+            if (polyCount == 0) break;
+        }
+
+        bool anyPoint = false;
+        for (int i = 0; i < polyCount; ++i) {
+            float dist = (poly[i] - refFace[0]).dot(refNormal);
+            if (dist >= 0.0f) continue; // not actually penetrating
+            Contact c;
+            c.a = &a; c.b = &b;
+            c.normal = best.axis;
+            c.penetration = -dist;
+            c.point = poly[i];
+            out.push_back(c);
+            anyPoint = true;
+        }
+
+        if (!anyPoint) { // rare degenerate/grazing case -- still resolve something
+            Contact c;
+            c.a = &a; c.b = &b;
+            c.normal = best.axis;
+            c.penetration = best.overlap;
+            c.point = a.position + (b.position - a.position) * 0.5f;
+            out.push_back(c);
+        }
+        return true;
     }
 
-    out.a = &a; out.b = &b;
-    out.normal = bestAxis;
-    out.penetration = bestOverlap;
-    // Approximate contact point: midpoint between the two centers, projected
-    // onto the separating plane. Good enough for stacking demos; a precise
-    // implementation would clip the incident face against the reference face.
-    out.point = a.position + (b.position - a.position) * 0.5f;
-    return true;
+    // --- Case 2: edge-edge contact -> single point near closest approach ---
+    {
+        Vec3 he = a.shape.halfExtents;
+        Vec3 pointOnA = a.position;
+        for (int k = 0; k < 3; ++k) {
+            if (k == best.edgeIndexA) continue;
+            float sign = (b.position - a.position).dot(axesA[k]) > 0 ? 1.0f : -1.0f;
+            pointOnA = pointOnA + axesA[k] * (he.component(k) * sign);
+        }
+        Vec3 heB = b.shape.halfExtents;
+        Vec3 pointOnB = b.position;
+        for (int k = 0; k < 3; ++k) {
+            if (k == best.edgeIndexB) continue;
+            float sign = (a.position - b.position).dot(axesB[k]) > 0 ? 1.0f : -1.0f;
+            pointOnB = pointOnB + axesB[k] * (heB.component(k) * sign);
+        }
+
+        Contact c;
+        c.a = &a; c.b = &b;
+        c.normal = best.axis;
+        c.penetration = best.overlap;
+        c.point = (pointOnA + pointOnB) * 0.5f;
+        out.push_back(c);
+        return true;
+    }
 }
+
 
 // ---------------------------------------------------------------------------
 // Sphere vs implicit ground plane (y = groundY)
@@ -204,19 +349,19 @@ void generateContacts(std::vector<RigidBody>& bodies, RigidBody& groundBody,
         for (size_t j = i + 1; j < bodies.size(); ++j) {
             RigidBody& a = bodies[i];
             RigidBody& b = bodies[j];
-            Contact c;
-            bool hit = false;
 
             if (a.shape.type == ShapeType::Sphere && b.shape.type == ShapeType::Sphere) {
-                hit = sphereSphereContact(a, b, c);
+                Contact c;
+                if (sphereSphereContact(a, b, c)) contactsOut.push_back(c);
             } else if (a.shape.type == ShapeType::Box && b.shape.type == ShapeType::Box) {
-                hit = boxBoxContact(a, b, c);
+                boxBoxContact(a, b, contactsOut); // appends 1-4 points directly
             } else if (a.shape.type == ShapeType::Sphere && b.shape.type == ShapeType::Box) {
-                hit = sphereBoxContact(a, b, c); // (sphereBody=a, boxBody=b)
+                Contact c;
+                if (sphereBoxContact(a, b, c)) contactsOut.push_back(c); // (sphereBody=a, boxBody=b)
             } else { // a = Box, b = Sphere
-                hit = sphereBoxContact(b, a, c); // (sphereBody=b, boxBody=a)
+                Contact c;
+                if (sphereBoxContact(b, a, c)) contactsOut.push_back(c); // (sphereBody=b, boxBody=a)
             }
-            if (hit) contactsOut.push_back(c);
         }
     }
 }

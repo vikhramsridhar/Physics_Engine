@@ -8,7 +8,7 @@
 
 bool sphereSphereContact(RigidBody& a, RigidBody& b, Contact& out);
 bool sphereBoxContact(RigidBody& sphereBody, RigidBody& boxBody, Contact& out);
-bool boxBoxContact(RigidBody& a, RigidBody& b, Contact& out);           // SAT, face axes only
+bool boxBoxContact(RigidBody& a, RigidBody& b, std::vector<Contact>& out);      // SAT (face+edge) + manifold clipping, up to 4 points
 bool spherePlaneContact(RigidBody& sphereBody, RigidBody& groundBody, float groundY, Contact& out);
 bool boxPlaneContact(RigidBody& boxBody, RigidBody& groundBody, float groundY, std::vector<Contact>& out);
 

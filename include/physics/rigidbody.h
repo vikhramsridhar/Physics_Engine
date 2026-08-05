@@ -34,5 +34,13 @@ struct RigidBody {
     void applyImpulseAtPoint(const Vec3& impulse, const Vec3& worldPoint);
 
     Mat3 worldInvInertiaTensor() const;
+
+    // Applies the world-space inverse inertia tensor to a vector -- i.e.
+    // computes I_world^-1 * v. Used both to apply torque impulses AND
+    // (critically) to compute the correct effective mass at an off-center
+    // contact point in the solver. Exposed as its own method because both
+    // call sites need exactly this operation.
+    Vec3 applyWorldInvInertia(const Vec3& v) const;
+
     void integrate(float dt);
 };

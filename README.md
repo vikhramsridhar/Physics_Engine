@@ -47,46 +47,76 @@ cmake --build .
 - Coulomb friction, clamped to the normal impulse magnitude
 - Baumgarte-style positional correction to prevent sinking
 
-## Verified status (tested by actually running it)
+## Verified status (tested by actually running it, including step-by-step debugging)
 
-- **Spheres**: fall, bounce with restitution, and settle correctly at rest. Verified.
-- **Single box vs. ground**: settles correctly at rest. Verified — this
-  required a real bug fix (see below).
+- **Spheres**: fall, bounce with restitution, settle correctly. Verified.
+- **Single box vs. ground**: settles correctly. Verified.
 - **Sphere vs. box**: settles correctly. Verified.
-- **Box-vs-box stacking is NOT stable yet.** Boxes in the demo scene gain
-  energy and fly apart rather than settling. Root cause below — this is a
-  known, understood limitation, not a mystery bug, but it is not fixed in
-  this version.
+- **Box-vs-box stacking: NOW STABLE.** Previously exploded (see bug history
+  below) — fixed by correcting the solver's effective-mass calculation.
+  Verified with an isolated 2-box test and the full 3-box demo scene; boxes
+  settle with near-zero velocity instead of gaining energy.
 
-## Bug found and fixed during testing
+## Bugs found and fixed during testing (real debugging history, not hypothetical)
 
-The original `boxPlaneContact` emitted one contact **per penetrating
-corner** (up to 4 for a box resting flat). The sequential-impulse solver
-treated these as four independent, fully redundant constraints on the same
-vertical motion; each pass corrected motion the others had just corrected,
-compounding instead of converging, and boxes shot upward at ~30+ units/sec
-within a few frames. Fixed by reducing all penetrating corners to a single
-contact per box (deepest penetration, averaged point) — see the comment
-block above `boxPlaneContact` in `collision.cpp` for the full explanation.
+**Bug 1 — redundant ground contacts.** `boxPlaneContact` originally emitted
+one contact per penetrating corner (up to 4). The solver treated these as
+independent, fully redundant constraints on the same vertical motion, and
+corrections compounded instead of converging — a box on flat ground shot
+upward at 30+ units/sec within a few frames. Fixed by reducing all
+penetrating corners to one contact per box (deepest penetration, averaged
+point).
 
-## Known simplifications (the box-box instability above traces to these)
+**Bug 2 — missing rotational term in effective mass (the big one).** After
+adding a real contact manifold for box-box (4 clipped points instead of 1
+approximate point), boxes exploded even worse than before. Root-caused by
+building an isolated single-contact reproduction case and inspecting
+before/after velocities directly (see git history / commit notes if you
+want the actual debug session). The bug: `resolveContact`'s impulse
+formula divided by `invMassA + invMassB` only. That's only correct for
+contacts that pass through the center of mass (true for spheres, since
+r=0 there). For any **off-center** contact — every box corner — resisting
+motion also fights rotational inertia, which adds a term per body:
+`normal . ( (I^-1 * (r x normal)) x r )`. Skipping it meant the solver
+underestimated how much each contact resists motion, so impulses
+overshot and the box spun and flew apart. Fixed in `solver.cpp` via
+`effectiveMassDenominator()`, using the new `RigidBody::applyWorldInvInertia()`
+helper (also used by `applyImpulseAtPoint`, so both paths are consistent).
+This is a classic physics-engine bug — it's silent for sphere-only scenes
+and only appears once contacts stop passing through the center of mass.
 
-1. **Box-box contact is a single approximate point** (midpoint between
-   centers), not a clipped contact manifold. A real engine generates a
-   stable 2-4 point manifold by clipping the incident face against the
-   reference face (Sutherland-Hodgman style) using the SAT reference axis.
-   A single point can't resist rotation the way a real face-face contact
-   needs to, so torque from the solver overcorrects — this is the direct
-   cause of the box-stacking explosion in the demo. **This is the most
-   valuable next piece of code to write** if you want a stable stack.
-2. **Box-box SAT only tests face axes (6), not edge-edge axes (9 more).**
-   Misses/mispositions some edge-on-edge collision configurations. Add the
-   9 cross-product axes of each edge-pair to `boxBoxContact` for full SAT.
-3. **No broad-phase.** Every pair of bodies is tested every frame (O(n^2)).
-   Fine below ~50 bodies; add a spatial hash grid or BVH beyond that.
-4. **No joints/constraints yet** (hinge, point-to-point). The `Contact`/solver
-   pattern in `solver.cpp` generalizes directly — a joint is just another
-   constraint type solved the same way.
+## What's now implemented in the box-box collision path
+
+- Full 15-axis SAT (6 face axes + 9 edge-edge cross-product axes) —
+  previously only tested the 6 face axes.
+- Proper contact manifold generation for face-face contacts via
+  Sutherland-Hodgman clipping (up to 4 points), instead of one
+  approximate midpoint. See `getFaceVerts`/`clipPolygonAgainstPlane`/
+  `boxBoxContact` in `collision.cpp`.
+- Single-point resolution for genuine edge-edge contacts (physically
+  correct — an edge-edge collision is a single point in exact geometry).
+- Solver correctly accounts for rotational inertia at every contact point,
+  not just linear mass (see Bug 2 above).
+
+## Remaining known simplifications
+
+1. **Small positional drift** — in a 2-box resting test, the top box drifts
+   laterally by ~0.1 units over several seconds even though it should stay
+   put. This traces to using the box's *current* position each solver
+   iteration to compute `r` for the effective-mass term, rather than a
+   fixed reference frame for the whole timestep — a small, bounded
+   inaccuracy, not a stability problem.
+2. **No warm starting.** `accumNormalImpulse`/`accumTangentImpulse` reset to
+   zero every frame instead of carrying over from the previous frame's
+   matching contact point. Real engines cache impulses across frames
+   (matched by contact ID) for faster convergence and less jitter in
+   persistent stacks.
+3. **Edge-edge contact point is approximate**, not the exact closest-point-
+   between-two-segments solution. Fine for stability, slightly imprecise
+   for exact contact placement in edge-on-edge configurations.
+4. **No broad-phase.** Every pair of bodies is tested every frame (O(n^2)).
+5. **No joints/constraints yet.** The `Contact`/solver pattern generalizes
+   directly — a joint is just another constraint type solved the same way.
 
 ## Windowed viewer (physics_sim_gl)
 

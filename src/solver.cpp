@@ -10,13 +10,41 @@ static Vec3 velocityAtPoint(const RigidBody& body, const Vec3& worldPoint) {
     return body.linearVelocity + body.angularVelocity.cross(r);
 }
 
+// The correct "effective mass" denominator for an impulse along `dir` at
+// `worldPoint` is NOT just invMassA + invMassB -- that's only correct for
+// contacts through the center of mass (true for spheres, since r=0 there).
+// For an off-center point (any box corner!), resisting motion along `dir`
+// also has to fight rotational inertia, which adds this extra term per body:
+//     dir . ( (I^-1 * (r x dir)) x r )
+// Skipping this term (an earlier version of this file did) makes the solver
+// compute impulses that are too large for off-center contacts, since it
+// underestimates how much motion the body actually resists -- the impulse
+// overshoots, and the box spins/explodes instead of settling. This was the
+// root cause of the box-stacking instability documented in the README.
+static float effectiveMassDenominator(const RigidBody& a, const RigidBody& b,
+                                       const Vec3& point, const Vec3& dir) {
+    float denom = a.invMass + b.invMass;
+
+    if (!a.isStatic) {
+        Vec3 ra = point - a.position;
+        Vec3 termA = a.applyWorldInvInertia(ra.cross(dir)).cross(ra);
+        denom += dir.dot(termA);
+    }
+    if (!b.isStatic) {
+        Vec3 rb = point - b.position;
+        Vec3 termB = b.applyWorldInvInertia(rb.cross(dir)).cross(rb);
+        denom += dir.dot(termB);
+    }
+    return denom;
+}
+
 void resolveContact(Contact& c, float restitution, float friction) {
     Vec3 relVel = velocityAtPoint(*c.b, c.point) - velocityAtPoint(*c.a, c.point);
     float velAlongNormal = relVel.dot(c.normal);
     if (velAlongNormal > 0.0f) return; // separating already
 
-    float invMassSum = c.a->invMass + c.b->invMass;
-    if (invMassSum <= 0.0f) return;
+    float invMassSum = effectiveMassDenominator(*c.a, *c.b, c.point, c.normal);
+    if (invMassSum <= 1e-8f) return;
 
     // Normal impulse
     float j = -(1.0f + restitution) * velAlongNormal / invMassSum;
@@ -34,15 +62,18 @@ void resolveContact(Contact& c, float restitution, float friction) {
     float tangentLen = tangent.length();
     if (tangentLen > 1e-6f) {
         tangent = tangent * (1.0f / tangentLen);
-        float jt = -relVel.dot(tangent) / invMassSum;
-        float maxFriction = friction * c.accumNormalImpulse;
-        float newTangentImpulse = std::clamp(c.accumTangentImpulse + jt, -maxFriction, maxFriction);
-        float deltaTangent = newTangentImpulse - c.accumTangentImpulse;
-        c.accumTangentImpulse = newTangentImpulse;
+        float tangentDenom = effectiveMassDenominator(*c.a, *c.b, c.point, tangent);
+        if (tangentDenom > 1e-8f) {
+            float jt = -relVel.dot(tangent) / tangentDenom;
+            float maxFriction = friction * c.accumNormalImpulse;
+            float newTangentImpulse = std::clamp(c.accumTangentImpulse + jt, -maxFriction, maxFriction);
+            float deltaTangent = newTangentImpulse - c.accumTangentImpulse;
+            c.accumTangentImpulse = newTangentImpulse;
 
-        Vec3 frictionImpulse = tangent * deltaTangent;
-        c.a->applyImpulseAtPoint(-frictionImpulse, c.point);
-        c.b->applyImpulseAtPoint(frictionImpulse, c.point);
+            Vec3 frictionImpulse = tangent * deltaTangent;
+            c.a->applyImpulseAtPoint(-frictionImpulse, c.point);
+            c.b->applyImpulseAtPoint(frictionImpulse, c.point);
+        }
     }
 }
 
