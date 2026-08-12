@@ -2,11 +2,6 @@
 #include "render/renderer.h"
 #include <GLFW/glfw3.h>
 
-// Same demo scene as main.cpp (console version), but rendered live instead
-// of printed as numbers. Run alongside src/main.cpp -- this is a SEPARATE
-// executable (physics_sim_gl) so the dependency-free console demo still
-// builds even on machines without GLFW installed.
-
 int main() {
     if (!Renderer::init(1024, 768, "Physics Sim Viewer")) {
         return 1;
@@ -41,7 +36,6 @@ int main() {
                 Renderer::drawBox(b.position, b.orientation, b.shape.halfExtents, 0.3f, 0.6f, 0.9f);
             }
         }
-
         Renderer::endFrame();
     }
 

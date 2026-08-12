@@ -97,6 +97,13 @@ bool windowShouldClose() {
     return g_window == nullptr || glfwWindowShouldClose(g_window);
 }
 
+GLFWwindow* GetWindow(){
+    if(g_window!=nullptr)
+        return g_window;
+    else
+        return nullptr;
+}
+
 void beginFrame(const Camera& cam, int fbWidth, int fbHeight) {
     glViewport(0, 0, fbWidth, fbHeight);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
