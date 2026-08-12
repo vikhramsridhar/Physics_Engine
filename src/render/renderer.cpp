@@ -7,6 +7,7 @@
 #include <cmath>
 #include <vector>
 #include <cstdio>
+#include <iostream>
 
 namespace {
     GLFWwindow* g_window = nullptr;
@@ -76,6 +77,8 @@ bool init(int width, int height, const char* title) {
     }
 
     glfwMakeContextCurrent(g_window);
+    glfwSetInputMode(g_window, GLFW_CURSOR, GLFW_CURSOR_NORMAL); 
+    glfwSetCursorPosCallback(g_window, mouse_callback);
     glfwSwapInterval(1); // vsync
 
     glEnable(GL_DEPTH_TEST);
@@ -97,13 +100,6 @@ bool windowShouldClose() {
     return g_window == nullptr || glfwWindowShouldClose(g_window);
 }
 
-GLFWwindow* GetWindow(){
-    if(g_window!=nullptr)
-        return g_window;
-    else
-        return nullptr;
-}
-
 void beginFrame(const Camera& cam, int fbWidth, int fbHeight) {
     glViewport(0, 0, fbWidth, fbHeight);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -120,6 +116,8 @@ void beginFrame(const Camera& cam, int fbWidth, int fbHeight) {
     glMatrixMode(GL_MODELVIEW);
     Mat4 view = lookAt(cam.eye, cam.target, cam.up);
     glLoadMatrixf(view.m);
+    Camera* camPtr = const_cast<Camera*>(&cam);
+    glfwSetWindowUserPointer(g_window, camPtr);
 }
 
 void drawBox(const Vec3& position, const Quat& orientation, const Vec3& he,
@@ -205,6 +203,19 @@ void shutdown() {
     if (g_window) glfwDestroyWindow(g_window);
     glfwTerminate();
     g_window = nullptr;
+}
+
+void mouse_callback(GLFWwindow* window, double xpos, double ypos) {
+
+    Camera* cam = static_cast<Camera*>(glfwGetWindowUserPointer(window));
+    
+    if (cam != nullptr) {
+        cam->eye.x = static_cast<float>(xpos/20);
+        cam->eye.y = static_cast<float>(ypos/20);
+
+        // For debugging purposes
+        //std::cout << "Mouse position: " << xpos/20 << ", " << ypos/20 << std::endl;
+    }
 }
 
 } // namespace Renderer

@@ -13,6 +13,11 @@ int main() {
     world.bodies.push_back(RigidBody::makeDynamicBox({3.0f, 2.0f, 0.0f}, {0.5f, 0.5f, 0.5f}, 1.0f));
     world.bodies.push_back(RigidBody::makeDynamicBox({3.05f, 3.2f, 0.02f}, {0.5f, 0.5f, 0.5f}, 1.0f));
     world.bodies.push_back(RigidBody::makeDynamicSphere({3.0f, 6.0f, 0.0f}, 0.4f, 0.5f));
+    world.bodies.push_back(RigidBody::makeDynamicSphere({-2.0f, 6.5f, 1.5f}, 0.6f, 1.2f));
+    world.bodies.push_back(RigidBody::makeDynamicBox({3.10f, 4.4f, -0.05f}, {0.5f, 0.5f, 0.5f}, 1.0f));
+    world.bodies.push_back(RigidBody::makeDynamicSphere({-0.5f, 10.0f, -0.5f}, 0.3f, 0.8f));
+    world.bodies.push_back(RigidBody::makeDynamicBox({-2.0f, 1.0f, 2.0f}, {1.0f, 0.2f, 1.0f}, 3.0f));
+    world.bodies.push_back(RigidBody::makeDynamicSphere({0.1f, 12.0f, 0.05f}, 0.5f, 1.0f));
 
     Camera cam;
     cam.eye = {8, 6, 12};
@@ -36,6 +41,7 @@ int main() {
                 Renderer::drawBox(b.position, b.orientation, b.shape.halfExtents, 0.3f, 0.6f, 0.9f);
             }
         }
+
         Renderer::endFrame();
     }
 

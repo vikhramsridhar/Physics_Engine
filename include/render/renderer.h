@@ -3,7 +3,6 @@
 #include "../math/quat.h"
 
 class GLFWwindow;
-
 // A minimal viewer using legacy fixed-function OpenGL (glBegin/glEnd,
 // glLoadMatrixf) via GLFW. This is deliberately NOT a modern shader-based
 // renderer -- immediate mode is far less code to get a working viewport,
@@ -44,7 +43,7 @@ void drawGroundGrid(float groundY, float halfSize, int divisions);
 // Swaps buffers and polls window/input events. Call once per frame, last.
 void endFrame();
 
-GLFWwindow* GetWindow();
+void mouse_callback(GLFWwindow* window, double xpos, double ypos);
 
 void shutdown();
 
