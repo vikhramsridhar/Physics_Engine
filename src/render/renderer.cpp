@@ -79,6 +79,7 @@ bool init(int width, int height, const char* title) {
     glfwMakeContextCurrent(g_window);
     glfwSetInputMode(g_window, GLFW_CURSOR, GLFW_CURSOR_NORMAL); 
     glfwSetCursorPosCallback(g_window, mouse_callback);
+    glfwSetScrollCallback(g_window,scroll_callback);
     glfwSwapInterval(1); // vsync
 
     glEnable(GL_DEPTH_TEST);
@@ -218,4 +219,15 @@ void mouse_callback(GLFWwindow* window, double xpos, double ypos) {
     }
 }
 
+void scroll_callback(GLFWwindow* window, double xoffset, double yoffset) {
+    Camera* cam = static_cast<Camera*>(glfwGetWindowUserPointer(window));
+    
+    // Scrolling UP (positive yoffset) zooms in -> decreases FOV
+    cam->fovDegrees -= static_cast<float>(yoffset) * 2.0f; // Adjust 2.0f to change zoom speed
+
+    // CRITICAL: Clamp the values so the image doesn't flip or distort horribly
+    if (cam->fovDegrees < 1.0f)   cam->fovDegrees = 1.0f;   // Maximum zoom in
+    if (cam->fovDegrees > 120.0f) cam->fovDegrees = 120.0f; // Maximum zoom out
+
+}
 } // namespace Renderer
